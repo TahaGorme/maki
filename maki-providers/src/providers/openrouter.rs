@@ -12,7 +12,7 @@ use crate::{
 };
 
 use super::openai_compat::{MODELS_PATH, OpenAiCompatConfig, OpenAiCompatProvider};
-use super::{KeyPool, ResolvedAuth};
+use super::{KeyHeader, KeyPool, KeyRotation, ResolvedAuth};
 
 const REFERER: &str = "https://maki.sh";
 const APP_TITLE: &str = "maki";
@@ -230,13 +230,12 @@ impl Provider for OpenRouter {
         })
     }
 
-    fn rotate_key(&self) -> BoxFuture<'_, Result<bool, AgentError>> {
-        Box::pin(async {
-            Ok(self
-                .key_pool
-                .as_ref()
-                .is_some_and(|p| p.rotate_bearer(&self.auth)))
-        })
+    fn keys(&self) -> Option<KeyRotation<'_>> {
+        Some(KeyRotation::new(
+            self.key_pool.as_ref()?,
+            &self.auth,
+            KeyHeader::Bearer,
+        ))
     }
 }
 

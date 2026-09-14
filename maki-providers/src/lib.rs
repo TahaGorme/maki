@@ -27,6 +27,7 @@ pub use providers::copilot::auth as copilot_auth;
 pub use providers::dynamic;
 pub use providers::openai::auth as openai_auth;
 pub use providers::xai::auth as xai_auth;
+pub use providers::{KeyHeader, KeyPool, KeyRotation, ResolvedAuth};
 pub use tokens::{ContextGauge, estimate_message_tokens, estimate_prompt_tokens};
 pub use types::{
     ContentBlock, EMPTY_RESPONSE_MARKER, Effort, EffortDialect, IMAGE_EVICTED_NOTE,

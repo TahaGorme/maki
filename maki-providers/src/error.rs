@@ -249,8 +249,13 @@ impl AgentError {
         self.non_login_error().is_some_and(|error| error.is_quota)
     }
 
+    /// Whether *this key* is the problem rather than the account, which is a
+    /// different question from whether the request is worth retrying: the retry
+    /// loop asks it for every error, since a 401 or a 403 is dead for this key
+    /// and fine for the next one.
     pub fn should_rotate_key(&self) -> bool {
-        // A plan quota is per-account, so the user's other keys are just as spent.
+        // A plan quota is per-account, so the other keys are just as spent and
+        // walking the pool only burns them in turn.
         !self.is_quota_exhausted()
             && matches!(self, Self::Api { status, .. } if *status == 429 || *status == 401 || *status == 403)
     }
@@ -350,6 +355,13 @@ impl From<maki_storage::StorageError> for AgentError {
 /// because the host name does not resolve. isahc folds a refused connection and
 /// a dead provider edge into the same `ConnectionFailed`, and telling them
 /// apart is not possible from here.
+///
+/// `ErrorKind::Timeout` stays out: it covers both an expired connect timeout
+/// and a stall on a stream that was already flowing, which want opposite
+/// budgets, and the error alone cannot say which happened. So it retries as
+/// [`RetryKind::Transient`], unbounded, and a blackholed SYN keeps trying where
+/// a refused port gives up in seconds. Splitting the two means tracking whether
+/// any byte ever arrived.
 fn is_connect_failure(e: &isahc::Error) -> bool {
     matches!(
         e.kind(),
@@ -388,6 +400,9 @@ mod tests {
     /// More rounds than any bounded budget allows, so a budget that survives
     /// all of them is the unbounded one.
     const ROUNDS: u32 = DEFAULT_MAX_RETRIES * 2;
+    /// Retry budgets are what these tests measure, so the key walk must not add
+    /// attempts of its own.
+    const ONE_KEY: usize = 1;
 
     fn api(status: u16) -> AgentError {
         AgentError::api(status, "")
@@ -516,7 +531,7 @@ mod tests {
     /// at `ROUNDS` for a budget with no ceiling.
     fn retries_granted(error: &AgentError) -> u32 {
         let kind = error.retry_kind().expect("a transport failure retries");
-        let mut state = RetryState::new(RetryPolicy::default());
+        let mut state = RetryState::new(RetryPolicy::default(), ONE_KEY);
         (0..ROUNDS)
             .take_while(|_| state.next_delay(kind, error.retry_after()).is_some())
             .count() as u32

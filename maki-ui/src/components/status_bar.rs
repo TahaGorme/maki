@@ -160,16 +160,24 @@ impl StatusBar {
         }
 
         if let Some(retry) = ctx.retry_info {
-            let secs = retry
-                .deadline
-                .saturating_duration_since(Instant::now())
-                .as_secs();
             left_spans.push(Span::styled(
                 format!(" {}", retry.message),
                 theme::current().status_retry_error,
             ));
+            // A fresh API key, or a smaller ask, waits for nothing. With no
+            // countdown to run, a frozen "in 0s" would only look stuck, so the
+            // banner just stands until the next attempt says something.
+            let secs = retry
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .as_secs();
+            let countdown = if secs > 0 {
+                format!(" in {secs}s")
+            } else {
+                String::new()
+            };
             left_spans.push(Span::styled(
-                format!(" · retrying in {secs}s (#{})", retry.attempt),
+                format!(" · retrying{countdown} (#{})", retry.attempt),
                 theme::current().status_retry_info,
             ));
         }
@@ -383,6 +391,11 @@ mod tests {
     const SESSION_COST: f64 = 1.5;
     const SESSION_COST_TEXT: &str = "\u{03a3}$1.500";
     const SIGMA: char = '\u{03a3}';
+    const RETRY_MESSAGE: &str = "rate limited";
+    const RETRY_ATTEMPT: u32 = 2;
+    const COUNTDOWN: &str = "retrying in";
+    /// Long enough that the countdown cannot lapse mid-render.
+    const RETRY_DELAY: Duration = Duration::from_secs(600);
 
     fn render(global_cost: Option<f64>, show_global: bool, yolo: bool) -> String {
         render_status(&Status::Idle, global_cost, show_global, yolo)
@@ -578,6 +591,28 @@ mod tests {
             "a full channel makes the watcher drop the next switch"
         );
         dirty
+    }
+
+    /// A key rotation and a shrunk output budget both retry with no delay, so
+    /// their banner has nothing to count down and must not freeze on "in 0s".
+    #[test_case(Duration::ZERO => false ; "an_instant_retry_has_no_countdown")]
+    #[test_case(RETRY_DELAY    => true  ; "a_delayed_retry_counts_down")]
+    fn the_retry_banner_counts_down_only_when_there_is_a_wait(delay: Duration) -> bool {
+        let retry = RetryInfo {
+            attempt: RETRY_ATTEMPT,
+            message: RETRY_MESSAGE.into(),
+            deadline: Instant::now() + delay,
+        };
+        let mut ctx = context(&Status::Streaming, None, false, false);
+        ctx.retry_info = Some(&retry);
+
+        let text = draw(&ctx);
+        assert!(text.contains(RETRY_MESSAGE), "{text}");
+        assert!(
+            text.contains(&format!("(#{RETRY_ATTEMPT})")),
+            "the attempt number survives either way: {text}"
+        );
+        text.contains(COUNTDOWN)
     }
 
     #[test]

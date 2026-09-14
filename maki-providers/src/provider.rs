@@ -12,7 +12,6 @@ use maki_config::ModelPolicy;
 use maki_storage::id::SessionRef;
 
 use crate::model::{Model, ModelFamily, ModelInfo};
-use crate::providers::Timeouts;
 use crate::providers::anthropic::Anthropic;
 use crate::providers::anthropic::bedrock;
 use crate::providers::aperture::Aperture;
@@ -34,6 +33,7 @@ use crate::providers::synthetic::Synthetic;
 use crate::providers::tensorx::TensorX;
 use crate::providers::xai::Xai;
 use crate::providers::zai::Zai;
+use crate::providers::{KeyRotation, Timeouts};
 use crate::{AgentError, Message, ProviderEvent, ProviderUsage, RequestOptions, StreamResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
@@ -304,8 +304,13 @@ pub trait Provider: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
-    fn rotate_key(&self) -> BoxFuture<'_, Result<bool, AgentError>> {
-        Box::pin(async { Ok(false) })
+    /// The keys this provider rotates through, and where the current one lives.
+    /// `None` is one fixed credential that never changes. This is the only hook
+    /// for rotation: both the count and the swap come off it, so they can never
+    /// describe different pools, which is what a per-provider `rotate_key` let
+    /// happen before.
+    fn keys(&self) -> Option<KeyRotation<'_>> {
+        None
     }
 
     fn adjust_model(&self, _model: &mut Model) {}

@@ -440,7 +440,9 @@ impl KeyPool {
             .and_then(|d| d.api_key.clone())
     }
 
-    pub(crate) fn from_keys(keys: Vec<String>) -> Self {
+    /// For callers that already hold the keys, rather than a source to resolve
+    /// them from.
+    pub fn from_keys(keys: Vec<String>) -> Self {
         Self {
             keys: Arc::new(keys),
             index: Arc::new(AtomicUsize::new(0)),
@@ -459,29 +461,67 @@ impl KeyPool {
         true
     }
 
-    /// Rotate to the next key and refresh only the header carrying it, so the
+    fn len(&self) -> usize {
+        self.keys.len()
+    }
+}
+
+/// Where a provider's key lands in its auth headers. Two shapes cover every
+/// provider we have, and an enum keeps "how a key becomes a header" in one
+/// place instead of one closure per provider.
+#[derive(Clone, Copy)]
+pub enum KeyHeader {
+    /// `Authorization: Bearer <key>`.
+    Bearer,
+    /// The key verbatim, in a provider specific header (`x-api-key`,
+    /// `x-goog-api-key`).
+    Raw(&'static str),
+}
+
+impl KeyHeader {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Bearer => AUTHORIZATION_HEADER,
+            Self::Raw(name) => name,
+        }
+    }
+
+    fn value(self, key: &str) -> String {
+        match self {
+            Self::Bearer => bearer_value(key),
+            Self::Raw(_) => key.to_string(),
+        }
+    }
+}
+
+/// A provider's keys and the auth they are written into.
+pub struct KeyRotation<'a> {
+    pool: &'a KeyPool,
+    auth: &'a Mutex<ResolvedAuth>,
+    header: KeyHeader,
+}
+
+impl<'a> KeyRotation<'a> {
+    pub fn new(pool: &'a KeyPool, auth: &'a Mutex<ResolvedAuth>, header: KeyHeader) -> Self {
+        Self { pool, auth, header }
+    }
+
+    /// How many keys a walk can try before it is back where it started.
+    pub fn key_count(&self) -> usize {
+        self.pool.len()
+    }
+
+    /// Advance to the next key and refresh only the header carrying it, so the
     /// resolved `base_url` and any `[<slug>.headers]` survive the rotation.
-    pub fn rotate_key_header(
-        &self,
-        auth: &Mutex<ResolvedAuth>,
-        name: &str,
-        build: impl FnOnce(&str) -> String,
-    ) -> bool {
-        if !self.rotate() {
+    pub fn rotate(&self) -> bool {
+        if !self.pool.rotate() {
             return false;
         }
-        auth.lock()
+        self.auth
+            .lock()
             .unwrap()
-            .set_key_header(name, build(self.current()));
+            .set_key_header(self.header.name(), self.header.value(self.pool.current()));
         true
-    }
-
-    pub fn rotate_bearer(&self, auth: &Mutex<ResolvedAuth>) -> bool {
-        self.rotate_key_header(auth, AUTHORIZATION_HEADER, bearer_value)
-    }
-
-    pub fn len(&self) -> usize {
-        self.keys.len()
     }
 }
 
@@ -765,22 +805,33 @@ mod tests {
         assert!(msg.contains(&var), "got: {msg}");
     }
 
+    const KEY_1: &str = "sk-1";
+    const KEY_2: &str = "sk-2";
+    const SECOND_BEARER: &str = "Bearer sk-2";
+    const RAW_KEY_HEADER: &str = "x-api-key";
+    const TRACE_HEADER: &str = "x-trace";
+    const TRACE_ID: &str = "trace-1";
+
+    fn two_key_pool() -> KeyPool {
+        KeyPool::from_keys(vec![KEY_1.into(), KEY_2.into()])
+    }
+
     #[test]
-    fn rotate_bearer_keeps_base_url_and_config_headers() {
-        let pool = KeyPool::from_keys(vec!["sk-1".into(), "sk-2".into()]);
+    fn rotate_keeps_base_url_and_config_headers() {
+        let pool = two_key_pool();
         let mut auth = test_bearer(pool.current());
         auth.base_url = Some(GATEWAY_URL.into());
         auth.apply_config_headers(TEST_SLUG, &config_headers(&[(GATEWAY_HEADER, GATEWAY_ID)]))
             .unwrap();
 
         let auth = Mutex::new(auth);
-        assert!(pool.rotate_bearer(&auth));
+        assert!(KeyRotation::new(&pool, &auth, KeyHeader::Bearer).rotate());
 
         let auth = auth.lock().unwrap();
         assert_eq!(auth.base_url.as_deref(), Some(GATEWAY_URL));
         assert_eq!(
             header_value(&auth, AUTHORIZATION_HEADER).as_deref(),
-            Some("Bearer sk-2")
+            Some(SECOND_BEARER)
         );
         assert_eq!(
             header_value(&auth, GATEWAY_HEADER).as_deref(),
@@ -789,8 +840,8 @@ mod tests {
     }
 
     #[test]
-    fn rotate_bearer_keeps_a_configured_auth_header() {
-        let pool = KeyPool::from_keys(vec!["sk-1".into(), "sk-2".into()]);
+    fn rotate_keeps_a_configured_auth_header() {
+        let pool = two_key_pool();
         let mut auth = test_bearer(pool.current());
         auth.apply_config_headers(
             TEST_SLUG,
@@ -799,7 +850,7 @@ mod tests {
         .unwrap();
 
         let auth = Mutex::new(auth);
-        assert!(pool.rotate_bearer(&auth));
+        assert!(KeyRotation::new(&pool, &auth, KeyHeader::Bearer).rotate());
 
         // The gateway credential replaced the built-in bearer, so rotating the
         // key must not put `Bearer sk-2` back and lock the user out.
@@ -809,5 +860,38 @@ mod tests {
             header_value(&auth, AUTHORIZATION_HEADER).as_deref(),
             Some(GATEWAY_CRED)
         );
+    }
+
+    #[test_case(KeyHeader::Bearer, AUTHORIZATION_HEADER, SECOND_BEARER ; "bearer")]
+    #[test_case(KeyHeader::Raw(RAW_KEY_HEADER), RAW_KEY_HEADER, KEY_2  ; "raw")]
+    fn rotate_advances_the_key_and_rewrites_only_its_header(
+        header: KeyHeader,
+        name: &str,
+        expected: &str,
+    ) {
+        let pool = two_key_pool();
+        let auth = Mutex::new(ResolvedAuth::for_test(
+            None,
+            vec![
+                (name.into(), header.value(pool.current())),
+                (TRACE_HEADER.into(), TRACE_ID.into()),
+            ],
+        ));
+
+        assert!(KeyRotation::new(&pool, &auth, header).rotate());
+
+        assert_eq!(pool.current(), KEY_2);
+        let auth = auth.lock().unwrap();
+        assert_eq!(header_value(&auth, name).as_deref(), Some(expected));
+        assert_eq!(header_value(&auth, TRACE_HEADER).as_deref(), Some(TRACE_ID));
+    }
+
+    #[test]
+    fn a_single_key_pool_has_nowhere_to_rotate_to() {
+        let pool = KeyPool::from_keys(vec![KEY_1.into()]);
+        let auth = Mutex::new(test_bearer(KEY_1));
+
+        assert!(!KeyRotation::new(&pool, &auth, KeyHeader::Bearer).rotate());
+        assert_eq!(pool.current(), KEY_1);
     }
 }

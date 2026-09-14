@@ -16,7 +16,7 @@ use crate::{
     StreamResponse, ThinkingConfig, TokenUsage,
 };
 
-use super::{KeyPool, ResolvedAuth, http_client, next_sse_line};
+use super::{KeyHeader, KeyPool, KeyRotation, ResolvedAuth, http_client, next_sse_line};
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const ENV_VAR: &str = "GEMINI_API_KEY";
@@ -301,13 +301,12 @@ impl Provider for Google {
         })
     }
 
-    fn rotate_key(&self) -> BoxFuture<'_, Result<bool, AgentError>> {
-        Box::pin(async {
-            Ok(self
-                .key_pool
-                .as_ref()
-                .is_some_and(|p| p.rotate_key_header(&self.auth, API_KEY_HEADER, str::to_string)))
-        })
+    fn keys(&self) -> Option<KeyRotation<'_>> {
+        Some(KeyRotation::new(
+            self.key_pool.as_ref()?,
+            &self.auth,
+            KeyHeader::Raw(API_KEY_HEADER),
+        ))
     }
 }
 

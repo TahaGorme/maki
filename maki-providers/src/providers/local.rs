@@ -15,7 +15,7 @@ use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
 
 use super::openai::responses;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
-use super::{KeyPool, ResolvedAuth};
+use super::{KeyHeader, KeyPool, KeyRotation, ResolvedAuth};
 
 pub(crate) struct LocalEndpointConfig {
     pub slug: &'static str,
@@ -180,13 +180,12 @@ impl Provider for LocalEndpoint {
         })
     }
 
-    fn rotate_key(&self) -> BoxFuture<'_, Result<bool, AgentError>> {
-        Box::pin(async {
-            Ok(self
-                .key_pool
-                .as_ref()
-                .is_some_and(|p| p.rotate_bearer(&self.auth)))
-        })
+    fn keys(&self) -> Option<KeyRotation<'_>> {
+        Some(KeyRotation::new(
+            self.key_pool.as_ref()?,
+            &self.auth,
+            KeyHeader::Bearer,
+        ))
     }
 }
 

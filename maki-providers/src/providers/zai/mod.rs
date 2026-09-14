@@ -15,7 +15,7 @@ use crate::{
     dialect,
 };
 
-use super::{KeyPool, ResolvedAuth};
+use super::{KeyHeader, KeyPool, KeyRotation, ResolvedAuth};
 
 static CONFIG_STANDARD: OpenAiCompatConfig = OpenAiCompatConfig {
     slug: "zai",
@@ -398,13 +398,12 @@ impl Provider for Zai {
         })
     }
 
-    fn rotate_key(&self) -> BoxFuture<'_, Result<bool, AgentError>> {
-        Box::pin(async {
-            Ok(self
-                .key_pool
-                .as_ref()
-                .is_some_and(|p| p.rotate_bearer(&self.auth)))
-        })
+    fn keys(&self) -> Option<KeyRotation<'_>> {
+        Some(KeyRotation::new(
+            self.key_pool.as_ref()?,
+            &self.auth,
+            KeyHeader::Bearer,
+        ))
     }
 
     fn adjust_model(&self, model: &mut Model) {
