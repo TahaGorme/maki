@@ -1602,7 +1602,10 @@ mod tests {
 
         assert!(outcome.is_err(), "{STALE_ALLOW}");
         assert!(!next_turn_is_allowed(&srv), "{STALE_ALLOW}");
-        assert!(answer_rx.is_empty(), "the stale answer was dropped, not left");
+        assert!(
+            answer_rx.is_empty(),
+            "the stale answer was dropped, not left"
+        );
     }
 
     /// A mismatched answer is dropped without ending the wait: the tool is
@@ -1620,7 +1623,10 @@ mod tests {
             outcome.is_ok(),
             "the deny named another ask and must not have ended this wait"
         );
-        assert!(answer_rx.is_empty(), "both answers were taken off the queue");
+        assert!(
+            answer_rx.is_empty(),
+            "both answers were taken off the queue"
+        );
     }
 
     #[test_case(PermissionAnswer::AllowSession, true ; "allow_applies_the_decision")]
@@ -1835,7 +1841,11 @@ mod tests {
         let answered = TaggedAnswer::new(PARENT_TOOL_USE_ID, PermissionAnswer::AllowOnce).encode();
         assert_eq!(answer_rx.try_recv().ok(), delivered.then_some(answered));
         assert_eq!(
-            pending(&srv).lock().unwrap().asks.contains_key(&ANSWERED_ID),
+            pending(&srv)
+                .lock()
+                .unwrap()
+                .asks
+                .contains_key(&ANSWERED_ID),
             !delivered,
             "only the ask that was answered is retired"
         );

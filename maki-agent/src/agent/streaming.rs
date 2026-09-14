@@ -215,16 +215,12 @@ pub(crate) async fn stream_with_retry(
     // Rebuilding images a provider would refuse can take real time on the
     // first request of a session full of screenshots, and it all happens
     // before anything below can observe a cancel.
-    let adapted = futures_lite::future::race(
-        async { Ok(maki_providers::adapt_images_for_model(model, messages).await) },
-        async {
-            cancel.cancelled().await;
-            Err(StreamError::Cancelled {
-                streamed: String::new(),
-            })
-        },
-    )
-    .await?;
+    let adapted = cancel
+        .race(maki_providers::adapt_images_for_model(model, messages))
+        .await
+        .map_err(|_| StreamError::Cancelled {
+            streamed: String::new(),
+        })?;
     let messages = &*adapted;
     let mut retry = RetryState::new(retry, provider.keys().map_or(1, |keys| keys.key_count()));
     loop {
@@ -240,14 +236,13 @@ pub(crate) async fn stream_with_retry(
             let event_tx = event_tx.clone();
             async move { forward_provider_events(prx, &event_tx).await }
         });
-        let result = futures_lite::future::race(
-            provider.stream_message(model, messages, system, tools, &ptx, opts, session_id),
-            async {
-                cancel.cancelled().await;
-                Err(AgentError::Cancelled)
-            },
-        )
-        .await;
+        // `race` checks the token before it polls, so a run cancelled while a
+        // retry slept on a server `Retry-After` never pays for the attempt it
+        // woke up to make.
+        let result = cancel
+            .race(provider.stream_message(model, messages, system, tools, &ptx, opts, session_id))
+            .await
+            .unwrap_or(Err(AgentError::Cancelled));
         drop(ptx);
         let streamed = forwarder.await;
         match result {
@@ -329,18 +324,7 @@ pub(crate) async fn stream_with_retry(
                     delay_ms,
                 })?;
                 if !delay.is_zero() {
-                    futures_lite::future::race(
-                        async {
-                            smol::Timer::after(delay).await;
-                        },
-                        cancel.cancelled(),
-                    )
-                    .await;
-                    if cancel.is_cancelled() {
-                        return Err(StreamError::Cancelled {
-                            streamed: String::new(),
-                        });
-                    }
+                    let _ = cancel.race(smol::Timer::after(delay)).await;
                 }
             }
         }
@@ -711,6 +695,46 @@ mod tests {
 
     const FIRST_ATTEMPT: u32 = 1;
     const NO_WAIT: u64 = 0;
+
+    /// A race wakes from whichever side gets there first, so racing the token
+    /// against the request still sent it about half the time. `race` checks the
+    /// token before it polls at all.
+    #[test]
+    fn a_cancelled_run_is_never_billed_for_a_request() {
+        smol::block_on(async {
+            let server = StrictServer {
+                window: STRICT_WINDOW,
+                requests: Mutex::default(),
+            };
+            let (trigger, cancel) = CancelToken::new();
+            trigger.cancel();
+            let (tx, _rx) = flume::unbounded();
+
+            let result = stream_with_retry(
+                StreamRequest {
+                    provider: &server,
+                    model: &strict_model(STRICT_WINDOW),
+                    messages: &transcript(),
+                    system: "",
+                    tools: &json!([]),
+                    opts: RequestOptions::default(),
+                    output_budget: TURN_BUDGET,
+                    session_id: None,
+                    retry: RetryPolicy::default(),
+                },
+                None,
+                &EventSender::new(tx, 0),
+                &cancel,
+            )
+            .await;
+
+            assert!(matches!(result, Err(StreamError::Cancelled { .. })));
+            assert!(
+                server.requests.lock().unwrap().is_empty(),
+                "a cancelled run reached the provider"
+            );
+        });
+    }
 
     /// `AgentEvent::Retry` is the only thing that makes the view drop what the
     /// refused attempt already streamed, so a budget retry that shrinks the ask

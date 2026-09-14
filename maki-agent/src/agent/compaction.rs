@@ -196,6 +196,11 @@ fn finish_compact(
 /// `system` and `tools` are the ones the next request will carry: compaction
 /// replaces the transcript and leaves that baseline untouched, so the gauge
 /// cannot be resized without them.
+///
+/// A retry in here can honour a server `Retry-After` that parks the request for
+/// an hour, so esc has to reach it. The cancel comes back as
+/// `Ok(DoneReason::Cancelled)`, like [`Agent::run`](super::Agent::run) does, to
+/// leave the error path for real failures.
 #[allow(clippy::too_many_arguments)]
 pub async fn compact(
     provider: &dyn maki_providers::provider::Provider,
@@ -205,26 +210,33 @@ pub async fn compact(
     system: &str,
     tools: &Value,
     event_tx: &EventSender,
+    cancel: &CancelToken,
     config: &AgentConfig,
     instructions: Option<&str>,
     session_id: Option<&SessionRef>,
     retry: RetryPolicy,
-) -> Result<(), AgentError> {
-    let cancel = CancelToken::none();
+) -> Result<DoneReason, AgentError> {
     let size_before = gauge.size();
-    let usage = compact_history(
+    let usage = match compact_history(
         provider,
         model,
         history,
         event_tx,
-        &cancel,
+        cancel,
         config,
         instructions,
         0,
         session_id,
         retry,
     )
-    .await?;
+    .await
+    {
+        Ok(usage) => usage,
+        // `finish_compact` is the only writer in here, so a cancel leaves the
+        // transcript and the gauge untouched and the session carries on.
+        Err(AgentError::Cancelled) => return Ok(DoneReason::Cancelled),
+        Err(e) => return Err(e),
+    };
     if let Some(post) = normalize(config.post_compaction_instructions.as_deref()) {
         history.push(Message::synthetic(post.to_string()));
     }
@@ -253,7 +265,7 @@ pub async fn compact(
         reason: DoneReason::Compact,
     })?;
 
-    Ok(())
+    Ok(DoneReason::Compact)
 }
 
 /// Context held back from the transcript.
@@ -480,7 +492,8 @@ mod tests {
         gauge: &mut ContextGauge,
         config: &AgentConfig,
         instructions: Option<&str>,
-    ) -> Result<(), AgentError> {
+        cancel: &CancelToken,
+    ) -> Result<DoneReason, AgentError> {
         let (raw_tx, _rx) = flume::unbounded();
         compact(
             provider,
@@ -490,6 +503,7 @@ mod tests {
             NO_SYSTEM,
             &no_tools(),
             &EventSender::new(raw_tx, 0),
+            cancel,
             config,
             instructions,
             None,
@@ -542,6 +556,7 @@ mod tests {
                 &mut ContextGauge::default(),
                 &AgentConfig::default(),
                 None,
+                &CancelToken::none(),
             )
             .await
             .unwrap();
@@ -577,6 +592,7 @@ mod tests {
                 &mut gauge,
                 &AgentConfig::default(),
                 None,
+                &CancelToken::none(),
             )
             .await
             .unwrap();
@@ -616,6 +632,7 @@ mod tests {
                 &mut gauge,
                 &AgentConfig::default(),
                 None,
+                &CancelToken::none(),
             )
             .await
             .expect_err("empty summary must fail");
@@ -650,6 +667,7 @@ mod tests {
                 &mut ContextGauge::default(),
                 &AgentConfig::default(),
                 None,
+                &CancelToken::none(),
             )
             .await
             .expect_err("empty summary must fail");
@@ -657,6 +675,38 @@ mod tests {
             assert!(matches!(err, AgentError::EmptySummary));
             assert_eq!(history.len(), 1);
             assert_eq!(history.as_slice()[0].user_text(), Some(KEPT));
+        });
+    }
+
+    #[test]
+    fn compact_reports_a_cancel_as_an_ending_not_a_failure() {
+        smol::block_on(async {
+            let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
+            let mut history = History::new(vec![Message::user(KEPT_TEXT.into())]);
+            let (trigger, cancel) = CancelToken::new();
+            trigger.cancel();
+
+            let reason = summarize(
+                &provider,
+                &mut history,
+                &mut ContextGauge::default(),
+                &AgentConfig::default(),
+                None,
+                &cancel,
+            )
+            .await
+            .expect("a cancel is an ending, not a failure");
+
+            assert_eq!(reason, DoneReason::Cancelled);
+            assert!(
+                provider.requests.lock().unwrap().is_empty(),
+                "the cancel should have landed before the request went out"
+            );
+            assert_eq!(
+                history.as_slice()[0].user_text(),
+                Some(KEPT_TEXT),
+                "a cancelled compaction must leave the transcript alone"
+            );
         });
     }
 
@@ -679,6 +729,7 @@ mod tests {
                 &mut ContextGauge::default(),
                 &config,
                 Some(REQUEST_EXTRA),
+                &CancelToken::none(),
             )
             .await
             .unwrap();

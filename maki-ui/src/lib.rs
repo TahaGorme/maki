@@ -53,7 +53,6 @@ pub fn terminal_width() -> Option<u16> {
     crossterm::terminal::size().ok().map(|(w, _)| w)
 }
 
-pub(crate) use agent::AgentCommand;
 pub use event_loop::EventLoopParams;
 
 /// How a UI generation ended. On `Reload`, each tab carries its in-memory

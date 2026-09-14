@@ -481,7 +481,9 @@ impl Permissions {
     }
 
     fn answer(&self, ask_id: &str, answer: PermissionAnswer) {
-        let _ = self.answer_tx.send(TaggedAnswer::new(ask_id, answer).encode());
+        let _ = self
+            .answer_tx
+            .send(TaggedAnswer::new(ask_id, answer).encode());
     }
 
     fn deny_unanswerable(&self, request_id: &str, ask_id: &str) {
@@ -1145,7 +1147,9 @@ impl EventPump {
                 {
                     let shared = self.shared.lock().unwrap();
                     if shared.permission_mode == PermissionMode::BypassPermissions {
-                        shared.permissions.answer(id, PermissionAnswer::AllowSession);
+                        shared
+                            .permissions
+                            .answer(id, PermissionAnswer::AllowSession);
                         return Ok(());
                     }
                 }
@@ -1727,7 +1731,10 @@ mod tests {
         assert!(answer_rx.is_empty(), "{NO_ANSWER}");
 
         permissions.resolve(OUTSTANDING_REQ, PermissionAnswer::AllowOnce);
-        assert_eq!(answer_rx.try_recv(), Ok(tagged(PermissionAnswer::AllowOnce)));
+        assert_eq!(
+            answer_rx.try_recv(),
+            Ok(tagged(PermissionAnswer::AllowOnce))
+        );
 
         permissions.resolve(OUTSTANDING_REQ, PermissionAnswer::AllowOnce);
         assert!(answer_rx.is_empty(), "{NO_ANSWER}");
@@ -1794,7 +1801,10 @@ mod tests {
             .unwrap()
             .permissions
             .resolve(&request_id, PermissionAnswer::AllowOnce);
-        assert_eq!(answer_rx.try_recv(), Ok(tagged(PermissionAnswer::AllowOnce)));
+        assert_eq!(
+            answer_rx.try_recv(),
+            Ok(tagged(PermissionAnswer::AllowOnce))
+        );
 
         pump.shared.lock().unwrap().permissions.close();
         pump.handle(permission_request()).unwrap();

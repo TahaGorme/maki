@@ -47,7 +47,7 @@ use tracing::{info, warn};
 
 use crate::AppSession;
 use crate::agent::{
-    AgentCommand, AgentHandles, ModelSlot,
+    AgentHandles, ModelSlot,
     shared_queue::{Compaction, QueueItem, QueuedInput},
 };
 use crate::app::shell::{ShellEvent, spawn_shell};
@@ -1150,7 +1150,7 @@ impl<'t> EventLoop<'t> {
                     self.ctx
                         .lua_event_handle
                         .end_session(rt.id(), SessionEndReason::Delete);
-                    rt.handles.cancel();
+                    rt.handles.cancel_all();
                 }
                 self.ctx.storage_writer.delete(id, move |res| {
                     let reply = match res {
@@ -1519,13 +1519,10 @@ impl<'t> EventLoop<'t> {
             Action::CancelAgent { run_id } => {
                 let rt = &mut self.sessions[idx];
                 rt.notifications.reset();
-                let _ = rt.handles.cmd_tx.try_send(AgentCommand::Cancel { run_id });
+                rt.handles.cancel_run(run_id);
             }
             Action::CancelSubagent { tool_use_id } => {
-                let _ = self.sessions[idx]
-                    .handles
-                    .cmd_tx
-                    .try_send(AgentCommand::CancelSubagent { tool_use_id });
+                self.sessions[idx].handles.cancel_subagent(tool_use_id);
             }
             Action::NewSession => {
                 self.respawn_agent(idx, Vec::new());
@@ -1762,7 +1759,7 @@ impl<'t> EventLoop<'t> {
             mcp::kill_process_groups(&h.reader().load().pids);
         }
         for rt in &self.sessions {
-            let _ = rt.handles.cmd_tx.try_send(AgentCommand::CancelAll);
+            rt.handles.cancel_all();
         }
         let kill_mcp_ms = lap();
         let mut tabs = Vec::with_capacity(self.sessions.len());
