@@ -13,7 +13,7 @@ use crate::providers::{ResolvedAuth, sse_error_status};
 use crate::types::EffortDialect;
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse,
-    ThinkingConfig, TokenUsage,
+    ThinkingConfig, TokenUsage, dialect,
 };
 
 const RESPONSES_PATH: &str = "/responses";
@@ -48,7 +48,11 @@ pub(crate) fn apply_responses_reasoning(
     dialect: &EffortDialect,
 ) {
     if let Some(effort) = thinking.effort_str(dialect, model) {
-        body["reasoning"] = json!({ "effort": effort });
+        let mut reasoning = json!({ "effort": effort });
+        if effort != dialect::OFF {
+            reasoning["summary"] = json!("auto");
+        }
+        body["reasoning"] = reasoning;
     }
 }
 
