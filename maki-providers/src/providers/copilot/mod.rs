@@ -1343,7 +1343,10 @@ mod tests {
             &model,
             &dialect,
         );
-        assert_eq!(body, json!({"reasoning": {"effort": "medium"}}));
+        assert_eq!(
+            body,
+            json!({"reasoning": {"effort": "medium", "summary": "auto"}})
+        );
         assert!(body.get("reasoning_effort").is_none());
     }
 
