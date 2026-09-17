@@ -163,20 +163,19 @@ pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
 
 static SUMMARY_REJECTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
+fn init_summary_rejected() -> &'static Mutex<HashSet<String>> {
+    SUMMARY_REJECTED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 fn summary_rejected(base: &str) -> bool {
-    SUMMARY_REJECTED
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .is_ok_and(|rejected| rejected.contains(base))
+    init_summary_rejected().lock().unwrap().contains(base)
 }
 
 fn reject_summary(base: &str) {
-    if let Ok(mut rejected) = SUMMARY_REJECTED
-        .get_or_init(|| Mutex::new(HashSet::new()))
+    init_summary_rejected()
         .lock()
-    {
-        rejected.insert(base.to_owned());
-    }
+        .unwrap()
+        .insert(base.to_owned());
 }
 
 fn has_summary(body: &Value) -> bool {
